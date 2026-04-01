@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
 import os
+import json
 import psycopg2
 import psycopg2.extras
 import boto3
@@ -11,27 +12,49 @@ CORS(app)
 load_dotenv()
 
 
+def get_secret():
+    """
+    Fetch database credentials from AWS Secrets Manager.
+    Falls back to environment variables if secret retrieval fails.
+    """
+    secret_name = os.getenv('SECRET_NAME', 'readingnook/db-credentials')
+    region_name = os.getenv('AWS_REGION', 'us-east-1')
+
+    try:
+        client = boto3.client('secretsmanager', region_name=region_name)
+        response = client.get_secret_value(SecretId=secret_name)
+        secret = json.loads(response['SecretString'])
+        return secret
+    except Exception as e:
+        print(f"Error fetching secret: {e}")
+        # Fallback to environment variables
+        return {
+            'DB_HOST': os.getenv('DB_HOST'),
+            'DB_NAME': os.getenv('DB_NAME'),
+            'DB_USER': os.getenv('DB_USER'),
+            'DB_PASS': os.getenv('DB_PASS')
+        }
+
+
 def get_db_connection():
     """
     Returns a new connection to the PostgreSQL database.
     """
+    secret = get_secret()
     conn = psycopg2.connect(
-        host=os.getenv('DB_HOST'),
-        database=os.getenv('DB_NAME'),
-        user=os.getenv('DB_USER'),
-        password=os.getenv('DB_PASS')
+        host=secret['DB_HOST'],
+        database=secret['DB_NAME'],
+        user=secret['DB_USER'],
+        password=secret['DB_PASS']
     )
     return conn
 
 @app.route('/', methods=['GET'])
 def welcome():
     return "Welcome to the INFT3200 API"
-    
+
 @app.route('/books/<int:isbn>', methods=['GET'])
 def get_book(isbn):
-    """
-    Retrieve a single book by ISBN.
-    """
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
     try:
@@ -67,7 +90,6 @@ def update_book(isbn):
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # Build a dynamic update statement based on provided fields
     update_fields = []
     update_values = []
 
@@ -85,7 +107,7 @@ def update_book(isbn):
 
     if inventory is not None:
         update_fields.append("inventory = %s")
-        update_values.append(inventory)    
+        update_values.append(inventory)
 
     update_values.append(isbn)
 
@@ -169,5 +191,4 @@ def add_book():
 
 if __name__ == '__main__':
     from waitress import serve
-    #app.run(debug=True)
     serve(app, host="0.0.0.0", port=8080)
